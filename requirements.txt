@@ -6,7 +6,7 @@ numpy==1.21.6
 opencv_python==4.6.0.66
 git+https://github.com/cocodataset/panopticapi.git
 Pillow==9.5.0
-pycocotools==2.0.4
+pycocotools==2.0.6
 PyYAML==6.0
 scipy==1.7.3
 tensorflow_cpu==2.10.0  # only needed for kitti step eval metrics script

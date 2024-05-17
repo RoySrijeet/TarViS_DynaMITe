@@ -1,4 +1,4 @@
-from tarvis.modelling.backbone.swin import D2SwinTransformer
+from tarvis.modelling.backbone.swin import D2SwinTransformer_TarViS
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import CfgNode as CN
 from detectron2.layers import ShapeSpec
@@ -86,7 +86,7 @@ class Backbone(nn.Module):
         super().__init__()
 
         input_shape = ShapeSpec(channels=3)
-        model = D2SwinTransformer(d2_cfg, input_shape)
+        model = D2SwinTransformer_TarViS(d2_cfg, input_shape)
 
         checkpoint_path = osp.join(Paths.pretrained_backbones_dir(), checkpoint_filename)
 

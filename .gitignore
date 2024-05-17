@@ -129,3 +129,10 @@ dmypy.json
 .pyre/
 
 .vscode
+
+datasets/
+local/
+output/
+tarvis_dynamite.sh
+random_best_worst_mono.py
+random_best_worst_duo.py

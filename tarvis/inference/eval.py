@@ -1,4 +1,6 @@
-from argparse import ArgumentParser
+import sys
+sys.path.append("/globalwork/roy/dynamite_video/tarvis_dynamite/TarViS_DynaMITe")
+from argparse import ArgumentParser, Namespace
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast
@@ -21,9 +23,11 @@ import tarvis.inference.result_formatters as rf
 import tarvis.inference.dataset_parser as parsers
 
 import os
+os.environ['TARVIS_WORKSPACE_DIR'] = "/globalwork/roy/dynamite_video/tarvis_dynamite/"
 import os.path as osp
 import torch
 import yaml
+import shutil
 
 
 @Timer.log_duration("inference")
@@ -78,22 +82,31 @@ def process_sequence(model: TarvisInferenceModel, mixed_precision: bool, data_lo
                     vos_ref_mask_info=clip_data["vos_ref_mask_info"]
                 )
 
+
         except AllObjectsLostException as _:
             result_accumulator.previous_clip_to_rles()
             result_accumulator.reset_buffers()
             model.reset_vos_buffers()
             continue
-
+        
         torch.cuda.empty_cache()
         result_accumulator.add_clip_result(
             model_output=model_outputs, frame_indices=clip_data["frame_indices"]
         )
-
     return result_accumulator.finalize_output()
 
 
+def dict_to_namespace(d):
+    return type('', (), d)
+
 @torch.no_grad()
-def main(args):
+def eval_tarvis(base_args):
+    print(f'Eval TarViS')
+    if isinstance(base_args, dict):
+        args = dict_to_namespace(base_args)
+    else:
+        args = base_args
+
     if not osp.isabs(args.model_path):
         args.model_path = osp.join(Paths.saved_models_dir(), args.model_path)
 
@@ -127,36 +140,12 @@ def main(args):
         model.vos_query_extractor.bg_grid_size[0] = args.vos_bg_grid_size[0]
         model.vos_query_extractor.bg_grid_size[1] = args.vos_bg_grid_size[1]
 
+    # hard-set output directory
     if args.output_dir:
-        if osp.isabs(args.output_dir):
-            output_dir = args.output_dir
-        else:
-            output_dir = osp.join(osp.dirname(args.model_path), args.output_dir)
-    else:
-        output_dir = osp.join(osp.dirname(args.model_path),
-                              f"{args.dataset.lower()}_{osp.split(args.model_path)[-1].replace('.pth', '')}")
-
-    if "SPLIT" in cfg_dataset:
-        if args.split:
-            cfg_dataset["SPLIT"] = args.split
-        output_dir = f"{output_dir}_{cfg_dataset['SPLIT']}"
-
-    if osp.exists(output_dir) and not args.overwrite and not args.output_dir:
-        output_dir = f"{output_dir}_1"
-        suffix = 1
-        while osp.exists(output_dir):
-            output_dir = output_dir[:-len(f"_{suffix}")]
-            suffix += 1
-            output_dir = f"{output_dir}_{suffix}"
-
+        output_dir = args.output_dir
     print(f"Output directory: {output_dir}")
 
-    output_results_dir = osp.join(output_dir, "formatted_results")
-    os.makedirs(output_results_dir, exist_ok=True)
-
-    # write out inference config params to file
-    with open(osp.join(output_dir, "inference_config.yaml"), 'w') as fh:
-        yaml.dump(cfg_dataset, fh, default_flow_style=False)
+    output_results_dir = output_dir
 
     if args.dataset == "YOUTUBE_VIS":
         dataset_info = parsers.YoutubeVISParser(**Paths.youtube_vis_val_paths())
@@ -168,7 +157,11 @@ def main(args):
 
     elif args.dataset == "DAVIS":
         if cfg_dataset["SPLIT"] == "val":
-            dataset_info = parsers.DavisDatasetParser(**Paths.davis_val_paths())
+            # dataset_info = parsers.DavisDatasetParser(**Paths.davis_val_paths())
+            dataset_info = parsers.DavisDatasetParser(images_base_dir='/globalwork/roy/dynamite_video/tarvis_dynamite/dataset_images/inference/davis', 
+                                                      annotations_base_dir=args.mask_directory,
+                                                      image_set_file_path='/globalwork/roy/dynamite_video/tarvis_dynamite/dataset_annotations/inference/davis/ImageSet_val.txt',
+                                                      seq=args.seq_names)
         else:
             assert cfg_dataset["SPLIT"] == "testdev", f"Invalid split: {cfg_dataset['SPLIT']}"
             dataset_info = parsers.DavisDatasetParser(**Paths.davis_testdev_paths())
@@ -215,11 +208,6 @@ def main(args):
     else:
         raise ValueError(f"Invalid dataset: {args.dataset}")
 
-    print(f"-------------------------------------\n"
-          f"Dataset inference config:\n"
-          f"{yaml.dump(cfg_dataset)}"
-          f"-------------------------------------")
-
     dataset_info.partition_sequences(args.seq_split)
 
     if args.seq_names:
@@ -256,7 +244,6 @@ def main(args):
                 sequence_info=sequence_info,
                 inference_params=cfg_dataset
             )
-
             sequence_results = result_formatter.add_sequence_result(
                 accumulator_output=sequence_results,
                 sequence_info=sequence_info
@@ -282,79 +269,52 @@ def main(args):
     # some datasets write out a single file combining all the per-sequence results
     result_formatter.finalize_output()
 
-    print(f"Inference duration: {Timer.get_duration('inference')}")
-    print(f"Inference FPS: {float(total_frames_processed) / Timer.get_duration('inference')}")
-    if Timer.exists("vizualization"):
-        print(f"Visualization duration: {Timer.get_duration('vizualization')}")
+    # print(f"Inference duration: {Timer.get_duration('inference')}")
+    # print(f"Inference FPS: {float(total_frames_processed) / Timer.get_duration('inference')}")
+    # if Timer.exists("vizualization"):
+    #     print(f"Visualization duration: {Timer.get_duration('vizualization')}")
+    
+    return sequence_results["mask_tensors"]
 
 
-if __name__ == "__main__":
-    parser = ArgumentParser()
+# if __name__ == "__main__":
+#     parser = ArgumentParser()
 
-    parser.add_argument("model_path")
+#     parser.add_argument(
+#         "--expt", type=str, required=True, help='name of the experiment, determines mask and output directories'
+#     )
+#     args = parser.parse_args()
 
-    parser.add_argument(
-        "--dataset", "-d", required=True, help="Name of the dataset e.g. 'DAVIS', 'YOUTUBE_VIS'"
-        )
-    parser.add_argument(
-        "--output_dir", "-o", required=False, help="Path to output directory where results will"
-        "be saved. Relative paths are appended to the model checkpoint directory."
-    )
-    parser.add_argument(
-        "--overwrite", action='store_true', help="If the output directory already exists and this "
-        "flag is given, the results will be overwritten. Otherwise a new directory is created by "
-        "appendin a suffix to the output directory."
-    )
+#     #mask_directory = os.path.join("/globalwork/roy/dynamite_video/tarvis_dynamite/dataset_annotations/inference/davis", args.expt)
+#     mask_directory = "/globalwork/roy/dynamite_video/tarvis_dynamite/dataset_annotations/inference/davis/DynaMITe_3_85"
+#     output_dir = os.path.join("/globalwork/roy/dynamite_video/tarvis_dynamite/output/", args.expt)
+    
+#     if os.path.isdir(output_dir):
+#         print(f'An experiment with the same name {args.expt} exists at {output_dir}')
+#         resp = input('Do you want to overwrite? [y/n]:')
+#         if resp == 'y':
+#             shutil.rmtree(output_dir)
+#             os.makedirs(output_dir)
+#     else:
+#         os.makedirs(output_dir)
 
-    parser.add_argument(
-        "--split", required=False, help="For some datasets e.g. BURST, this option specifies the "
-        "dataset split on which to infer e.g. val, test."
-    )
-    parser.add_argument(
-        "--amp", action='store_true', help="If given, inference will run with mixed precision."
-    )
-
-    parser.add_argument(
-        "--num_workers", type=int, default=2, help="Number of CPU workers used for data loading."
-    )
-    parser.add_argument(
-        "--viz", action='store_true', help="If set, the results will be saved in an easy-to-visualize image format in "
-        "addition to the standard dataset format."
-    )
-    parser.add_argument(
-        "--viz_num_procs", type=int, default=8,
-        help="Number of CPU processes to use for visualization generation."
-    )
-
-    parser.add_argument(
-        "--seq_split", required=False, help="To run inference on only a subset of sequences as given by their indices"
-    )
-    parser.add_argument(
-        "--seq_names", nargs="*", required=False, help="To run inference on only a subset of sequences "
-        "as given by the sequence names."
-    )
-
-    # the options below override the inference config parameters
-    parser.add_argument(
-        "--clip_length", "-cl", type=int, required=False, 
-        help="Controls the clip length (number of frames) to use."
-    )
-    parser.add_argument(
-        "--frame_overlap", "-fo", type=int, required=False,
-        help="Controls the number of overlapping frames between successive clips."
-    )
-    parser.add_argument(
-        "--min_dim", type=int, required=False,
-        help="Controls how large the smaller dimensions of the images should be before "
-        "feeding them to the model."
-    )
-    parser.add_argument(
-        "--disable_resize", action='store_true',
-        help="Disables image resizing i.e. the image is input to the model in its original resolution."
-    )
-    parser.add_argument(
-        "--vos_bg_grid_size", type=int, nargs=2, required=False,
-        help="Controls the size of the grid used for generating background queries for the VOS and PET tasks."
-    )
-
-    main(parser.parse_args())
+    
+#     setattr(args, "model_path", "/globalwork/roy/dynamite_video/tarvis_dynamite/pretrained_backbones/swin-tiny_finetune/090000.pth")
+#     setattr(args, "dataset", "DAVIS")
+#     setattr(args, "output_dir", output_dir)
+#     setattr(args, "overwrite", False)
+#     setattr(args, "split", None)
+#     setattr(args, "amp", True)
+#     setattr(args, "num_workers", 2)
+#     setattr(args, "viz", False)
+#     setattr(args, "viz_num_procs", 8)
+#     setattr(args, "seq_split", None)
+#     setattr(args, "seq_names", ['blackswan'])
+#     setattr(args, "clip_length", None)
+#     setattr(args, "frame_overlap", None)
+#     setattr(args, "min_dim", None)
+#     setattr(args, "disable_resize", False)
+#     setattr(args, "vos_bg_grid_size", None)
+#     setattr(args, "mask_directory", mask_directory)
+#     eval_tarvis(args)
+    

@@ -25,7 +25,8 @@ class VOSResultFormatter(ResultFormatterBase):
     def add_sequence_result(self, accumulator_output: Dict[str, Any], sequence_info: Dict[str, Any]):
         seq_track_rles = accumulator_output["track_mask_rles"]
         assert len(seq_track_rles) == len(sequence_info["image_paths"])
-        seq_output_dir = osp.join(self.output_dir, sequence_info["dirname"])
+        #seq_output_dir = osp.join(self.output_dir, sequence_info["dirname"])
+        seq_output_dir = self.output_dir
         os.makedirs(seq_output_dir, exist_ok=True)
 
         for t, (rles_t, img_path_t) in enumerate(zip(seq_track_rles, sequence_info["image_paths"])):

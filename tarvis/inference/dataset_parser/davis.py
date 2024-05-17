@@ -7,7 +7,7 @@ from tarvis.inference.dataset_parser import DatasetParserBase
 
 
 class DavisDatasetParser(DatasetParserBase):
-    def __init__(self, images_base_dir: str, annotations_base_dir: str, image_set_file_path: str):
+    def __init__(self, images_base_dir: str, annotations_base_dir: str, image_set_file_path: str, seq: str=None):
         super().__init__("vos", "DAVIS")
 
         self.images_base_dir = images_base_dir
@@ -16,8 +16,11 @@ class DavisDatasetParser(DatasetParserBase):
         self.sequence_annotation_filenames: Dict[str, List[str]] = dict()
         self.dirname_to_image_dims = dict()
 
-        with open(image_set_file_path, 'r') as fh:
-            self.sequence_dirnames = [x.strip() for x in fh.readlines()]
+        if seq is None:
+            with open(image_set_file_path, 'r') as fh:
+                self.sequence_dirnames = [x.strip() for x in fh.readlines()]
+        else:
+            self.sequence_dirnames = seq
 
         self.populate_image_paths()
 

@@ -26,6 +26,10 @@ class ExemplarBasedSegmentationResultAccumulator(ResultAccumulatorBase):
         self.lost_instance_ids = []
 
         self.output_masks: List[Dict[int, Any]] = [dict() for _ in range(sequence_length)]
+        self.mask_tensors: List[Dict[int, Any]] = [dict() for _ in range(sequence_length)]
+    
+    def get_mask_tensors(self):
+        return self.mask_tensors
 
     def reset_buffers(self):
         self.previous_clip_logits: Tensor = torch.empty(0)  # N, T, H, W
@@ -108,10 +112,13 @@ class ExemplarBasedSegmentationResultAccumulator(ResultAccumulatorBase):
             for t, mask_t in zip(self.previous_clip_frame_indices.tolist(), instance_masks):
                 if not torch.any(mask_t):
                     continue
+                
+                self.mask_tensors[t][inst_id] = np.asfortranarray(mask_t.cpu().numpy().astype('uint8'))
+                self.output_masks[t][inst_id] = mt.encode(np.asfortranarray(mask_t.byte().cpu().numpy()))        
 
-                self.output_masks[t][inst_id] = mt.encode(np.asfortranarray(mask_t.byte().cpu().numpy()))
 
     def finalize_output(self):
         return {
-            "track_mask_rles": self.output_masks
+            "track_mask_rles": self.output_masks,
+            "mask_tensors": self.mask_tensors,            
         }
