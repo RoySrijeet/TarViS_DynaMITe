@@ -49,6 +49,7 @@ def evaluate(
     all_ious = {}
     all_instance_level_iou = {}
     copy_iou_checkpoints = [0.85, 0.90, 0.95, 0.99]    
+    progress_report = {}
 
     with ExitStack() as stack:                                           
 
@@ -92,6 +93,7 @@ def evaluate(
             seq_avg_iou = 0                                                          # records average IoU for the sequence
             seq_avg_jf = 0                                                           # records average J&F for the sequence
             iou_checkpoints = copy.deepcopy(copy_iou_checkpoints)                    # IoU checkpoints
+            progress_report[seq] = {}
             
             instance_level_iou = [[]] * num_frames
             dynamite_preds = []
@@ -256,6 +258,7 @@ def evaluate(
                     #     np.save(os.path.join(vis_path_round, f"propagation_J&F_{round(seq_avg_jf,2)}_Round_{round_num}.npy"), out_masks.astype('uint8'))
                     
                     all_interactions_per_round[seq].append([round_num, '-', '-', '-', sum(num_interactions_for_sequence), '-', seq_avg_iou, seq_avg_jf])
+                    progress_report[seq][round_num] = {'J_AND_F': seq_avg_jf, 'J': seq_avg_iou, 'J_AND_F_FRAME': j_and_f, 'J_FRAME': iou_for_sequence}
                     
                     # Check stopping criteria
                     frame_list = [i for i in range(num_frames)]
@@ -305,7 +308,7 @@ def evaluate(
             del clicker_dict, predictor_dict
             del all_frames, num_interactions_for_sequence   
             del iou_for_sequence, jaccard_instances, jaccard_mean, contour_instances, contour_mean
-
+            gc.collect()
 
     results = {
                 'iou_threshold': iou_threshold,
@@ -328,7 +331,7 @@ def evaluate(
                 'all_ious': all_ious,
     }
 
-    return results
+    return results, progress_report
 
 
 @contextmanager

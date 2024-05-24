@@ -49,7 +49,8 @@ from dynamite import (
 from dynamite.inference.utils.eval_utils import log_single_instance, log_multi_instance
 
 from metrics.summary import summarize_results,summarize_round_results
-
+import copy
+import gc
 
 _root = "/globalwork/roy/dynamite_video/tarvis_dynamite/TarViS_DynaMITe/datasets/"
 _DATASET_PATH = {
@@ -77,7 +78,9 @@ class Trainer(DefaultTrainer):
         return build_detection_test_loader(cfg, dataset_name, mapper=mapper)        # d2 call
     
     @classmethod
-    def interactive_evaluation(cls, cfg, dynamite_model, args=None, tarvis_config=None):
+    def interactive_evaluation(cls, cfg, dynamite_model, interactions, iou, 
+                                all_images, all_gt_masks, dataloader_dict,
+                                args=None, tarvis_config=None):
         """
         Evaluate the given model. The given model is expected to already contain
         weights to evaluate.
@@ -114,7 +117,6 @@ class Trainer(DefaultTrainer):
                 if eval_strategy in ["random", "best", "worst"]:
                     if dataset_name != "mose_val":
                         from dynamite.inference.multi_instance.random_best_worst import evaluate
-                        #from dynamite.inference.multi_instance.random_best_worst_mono import evaluate
                     else:
                         from dynamite.inference.multi_instance.random_best_worst_mose import evaluate
                 else:
@@ -122,66 +124,48 @@ class Trainer(DefaultTrainer):
                 
                 print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')
 
-                print(f'[INFO] Loading all ground truth masks from the disc...')
-                all_gt_masks = load_gt_masks(dataset_name, debug)
-                if dataset_name != "mose_val":
-                    print(f'[INFO] Loading all frames from the disc...')
-                    all_images = load_images(dataset_name, debug)                
-                    assert len(all_images) == len(all_gt_masks)
-                    print(f'[INFO] Loaded {len(all_images)} sequences.')
-                else:
-                    all_images = {}
+                print(f'Interactions: {interactions}')
+                print()
+
+                #for interactions, iou in list(itertools.product(max_interactions,iou_threshold)):
+                save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
+                #save_path = vis_path
+                os.makedirs(save_path, exist_ok=True) 
+                expt_path = os.path.join(save_path, 'tarvis_propagation')
+                os.makedirs(expt_path, exist_ok=True)
+
+                print(f'[INFO] Starting evaluation...')
+                vis_path_vis = os.path.join(save_path, 'vis')
+                os.makedirs(vis_path_vis, exist_ok=True)
+                results_i, progress_report = evaluate(dynamite_model,
+                                    tarvis_config,
+                                    dataloader_dict, all_images, all_gt_masks,
+                                    iou_threshold = iou,
+                                    max_interactions = interactions,
+                                    eval_strategy = eval_strategy,
+                                    seed_id=seed_id,
+                                    vis_path=vis_path_vis,
+                                    max_rounds=max_rounds,
+                                    dataset_name=dataset_name,
+                                    save_masks=True,
+                                    expt_path=expt_path)
                 
-                print(f'[INFO] Loading test data loader from {dataset_name}...')
-                data_loader = cls.build_test_loader(cfg, dataset_name)
-                print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
-                dataloader_dict = defaultdict(list)
-                print(f'[INFO] Iterating through the Data Loader...')
-                # iterate through the data_loader, one image at a time
-                for idx, inputs in enumerate(data_loader):                     
-                    curr_seq_name = inputs[0]["file_name"].split('/')[-2]
-                    if debug and curr_seq_name != list(all_images.keys())[0]:
-                        break
-                    dataloader_dict[curr_seq_name].append([idx, inputs])
-                del data_loader
+                print(f'[INFO] Evaluation complete for dataset {dataset_name}: IoU threshold={iou}, Interaction budget={interactions}!')
 
-                for interactions, iou in list(itertools.product(max_interactions,iou_threshold)):
-                    save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
-                    #save_path = vis_path
-                    os.makedirs(save_path, exist_ok=True) 
-                    expt_path = os.path.join(save_path, 'tarvis_propagation')
-                    os.makedirs(expt_path, exist_ok=True)
-
-                    print(f'[INFO] Starting evaluation...')
-                    vis_path_vis = os.path.join(save_path, 'vis')
-                    os.makedirs(vis_path_vis, exist_ok=True)
-                    results_i = evaluate(dynamite_model,
-                                        tarvis_config,
-                                        dataloader_dict, all_images, all_gt_masks,
-                                        iou_threshold = iou,
-                                        max_interactions = interactions,
-                                        eval_strategy = eval_strategy,
-                                        seed_id=seed_id,
-                                        vis_path=vis_path_vis,
-                                        max_rounds=max_rounds,
-                                        dataset_name=dataset_name,
-                                        save_masks=True,
-                                        expt_path=expt_path)
+                with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                    json.dump(results_i, f)
+                with open(os.path.join(save_path,f'progress_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                    json.dump(progress_report, f)
+                
+                if dataset_name != "mose_val":
+                    summary, df = summarize_results(results_i)
+                    df.to_csv(os.path.join(save_path, f'round_results_{interactions}_interactions_iou_{int(iou*100)}.csv'))
+                    with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                        json.dump(summary, f)
                     
-                    print(f'[INFO] Evaluation complete for dataset {dataset_name}: IoU threshold={iou}, Interaction budget={interactions}!')
-
-                    with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
-                        json.dump(results_i, f)
-                    
-                    if dataset_name != "mose_val":
-                        summary, df = summarize_results(results_i)
-                        df.to_csv(os.path.join(save_path, f'round_results_{interactions}_interactions_iou_{int(iou*100)}.csv'))
-                        with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
-                            json.dump(summary, f)
-                        
-                        summary_df = summarize_round_results(df, iou)
-                        summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
-                    del results_i
+                    summary_df = summarize_round_results(df, iou)
+                    summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
+                del results_i
 
                 
 def load_images(dataset_name="davis_2017_val", debug_mode=False):
@@ -256,43 +240,74 @@ def main(args):
     cfg = setup(args)       # create configs 
     print('[INFO] Setup complete!')
 
+    dataset_name = args.eval_datasets[0]
+    print(f'[INFO] Loading all ground truth masks from the disc...')
+    all_gt_masks = load_gt_masks(dataset_name, args.debug)
+    if dataset_name != "mose_val":
+        print(f'[INFO] Loading all frames from the disc...')
+        all_images = load_images(dataset_name, args.debug)                
+        assert len(all_images) == len(all_gt_masks)
+        print(f'[INFO] Loaded {len(all_images)} sequences.')
+    else:
+        all_images = {}
+    
+    print(f'[INFO] Loading test data loader from {dataset_name}...')
+    data_loader = Trainer.build_test_loader(cfg, dataset_name)
+    print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
+    dataloader_dict = defaultdict(list)
+    print(f'[INFO] Iterating through the Data Loader...')
+    # iterate through the data_loader, one image at a time
+    for idx, inputs in enumerate(data_loader):                     
+        curr_seq_name = inputs[0]["file_name"].split('/')[-2]
+        if args.debug and curr_seq_name != list(all_images.keys())[0]:
+            break
+        dataloader_dict[curr_seq_name].append([idx, inputs])
+    del data_loader
 
-    # for evaluation
-    if args.eval_only:
-        print('[INFO] DynaMITExTarViS Evaluation!')
-        torch.autograd.set_grad_enabled(False)
+    for interactions, iou in list(itertools.product(args.max_interactions,args.iou_threshold)):
+        dataloader_dict_copy = copy.deepcopy(dataloader_dict)
+        # for evaluation
+        if args.eval_only:
+            print('[INFO] DynaMITExTarViS Evaluation!')
+            torch.autograd.set_grad_enabled(False)
 
-        print('[INFO] Building model...')
-        dynamite_model = Trainer.build_model(cfg)                                                # load model (torch.nn.Module)
-        print('[INFO] Loading model weights...')                                        
-        DetectionCheckpointer(dynamite_model, save_dir=cfg.OUTPUT_DIR).resume_or_load(           # d2 checkpoint load
-             cfg.MODEL.WEIGHTS, resume=args.resume
-        )
-        print('[INFO] DynaMITe loaded!')
+            print('[INFO] Building model...')
+            dynamite_model = Trainer.build_model(cfg)                                                # load model (torch.nn.Module)
+            print('[INFO] Loading model weights...')                                        
+            DetectionCheckpointer(dynamite_model, save_dir=cfg.OUTPUT_DIR).resume_or_load(           # d2 checkpoint load
+                cfg.MODEL.WEIGHTS, resume=args.resume
+            )
+            print('[INFO] DynaMITe loaded!')
 
-        tarvis_config = {}
-        tarvis_config['model_path'] = "/globalwork/roy/dynamite_video/tarvis_dynamite/pretrained_backbones/swin-tiny_finetune/090000.pth"
-        tarvis_config['dataset'] = args.eval_datasets        
-        tarvis_config['output_dir'] = ""
-        tarvis_config["mask_directory"] = ""
-        
-        tarvis_config["overwrite"] = False
-        tarvis_config["split"] = None
-        tarvis_config["amp"] = True
-        tarvis_config["num_workers"] = 2
-        tarvis_config["viz"] = False
-        tarvis_config["viz_num_procs"] = 8
-        tarvis_config["seq_split"] = None
-        tarvis_config["seq_names"] = None
-        tarvis_config["clip_length"] = None
-        tarvis_config["frame_overlap"] = None
-        tarvis_config["min_dim"] = None
-        tarvis_config["disable_resize"] = False
-        tarvis_config["vos_bg_grid_size"] = None        
-        
-        res = Trainer.interactive_evaluation(cfg, dynamite_model, args, tarvis_config)
+            tarvis_config = {}
+            tarvis_config['model_path'] = "/globalwork/roy/dynamite_video/tarvis_dynamite/pretrained_backbones/swin-tiny_finetune/090000.pth"
+            tarvis_config['dataset'] = args.eval_datasets        
+            tarvis_config['output_dir'] = ""
+            tarvis_config["mask_directory"] = ""
+            
+            tarvis_config["overwrite"] = False
+            tarvis_config["split"] = None
+            tarvis_config["amp"] = True
+            tarvis_config["num_workers"] = 2
+            tarvis_config["viz"] = False
+            tarvis_config["viz_num_procs"] = 8
+            tarvis_config["seq_split"] = None
+            tarvis_config["seq_names"] = None
+            tarvis_config["clip_length"] = None
+            tarvis_config["frame_overlap"] = None
+            tarvis_config["min_dim"] = None
+            tarvis_config["disable_resize"] = False
+            tarvis_config["vos_bg_grid_size"] = None        
+            
+            res = Trainer.interactive_evaluation(cfg, dynamite_model, 
+                                                interactions, iou,
+                                                all_images, all_gt_masks, dataloader_dict_copy,
+                                                args, tarvis_config)
 
-        return res
+        #return res
+        del dynamite_model, res, dataloader_dict_copy
+        torch.cuda.empty_cache()
+        gc.collect()
 
     else:
         print(f'[INFO] Training routine... Not Implemented')
