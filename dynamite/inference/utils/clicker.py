@@ -351,12 +351,15 @@ class Clicker:
             img.save(os.path.join(save_dir, f"mask_{str(self.inputs[0]['image_id'])}_interactions_{num_interactions}_iou_{iou_val}_round_{round_num}.png"))         
         
             if expt_path:
-                filename = os.path.join(expt_path,f"{str(self.inputs[0]['image_id'])[-5:]}.png")
+                if self.dataset_name == "burst_val":
+                    filename = os.path.join(expt_path,f"{str(self.inputs[0]['image_id'].split('-')[-1])}.png")
+                else:
+                    filename = os.path.join(expt_path,f"{str(self.inputs[0]['image_id'])[-5:]}.png")
                 if os.path.isfile(filename):
-                    print(f"[DynaMITe INFO] Replacing mask for frame {str(self.inputs[0]['image_id'])[-5:]}")
+                    print(f"[DynaMITe INFO] Replacing mask for frame {filename}")
                 img = Image.fromarray(dummy_.astype(np.uint8))
                 img.putpalette(self.palette)
-                img.save(filename)         
+                img.save(filename)                 
     
     def apply_mask(self, image, mask, color, alpha=0.5):
         for c in range(3):

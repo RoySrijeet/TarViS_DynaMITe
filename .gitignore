@@ -133,6 +133,8 @@ dmypy.json
 datasets/
 local/
 output/
+wandb/
 tarvis_dynamite.sh
+tarvis_train.sh
 random_best_worst_mono.py
 random_best_worst_duo.py

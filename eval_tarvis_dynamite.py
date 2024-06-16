@@ -47,25 +47,14 @@ from dynamite import (
 )
 
 from dynamite.inference.utils.eval_utils import log_single_instance, log_multi_instance
+from dynamite.inference.multi_instance.random_best_worst import evaluate
 
 from metrics.summary import summarize_results,summarize_round_results
 import copy
 import gc
-
-_root = "/globalwork/roy/dynamite_video/tarvis_dynamite/TarViS_DynaMITe/datasets/"
-_DATASET_PATH = {
-    "davis_2017_val": {
-        "annotations": "DAVIS/DAVIS-2017-trainval/Annotations/480p",
-        "images": "DAVIS/DAVIS-2017-trainval/JPEGImages/480p",
-        "sets": "DAVIS/DAVIS-2017-trainval/ImageSets/2017/val.txt",
-    },
-    "mose_val": {
-        "annotations": "MOSE/valid/Annotations",
-        "images":"MOSE/valid/JPEGImages",
-        "sets":"",
-    },
-    "kitti_mots_val": {},
-}
+import tarvis_dynamite_helpers as helpers
+_DATASET_ROOT = helpers._DATASET_ROOT
+_DATASET_PATH = helpers._DATASET_PATH
 
 class Trainer(DefaultTrainer):
     """
@@ -109,25 +98,11 @@ class Trainer(DefaultTrainer):
 
         for dataset_name in eval_datasets:
 
-            if dataset_name in ["davis_2017_val","mose_val","sbd_multi_insts","coco_2017_val"]:
+            if dataset_name in ["davis_2017_val","mose_val","sbd_multi_insts","burst_val","coco_2017_val"]:
                 print(f'[INFO] Initiating Multi-Instance Evaluation on {eval_datasets}...')
                 if dataset_name == "davis_2017_val":
-                    tarvis_config['dataset'] = 'DAVIS'
-                
-                if eval_strategy in ["random", "best", "worst"]:
-                    if dataset_name != "mose_val":
-                        from dynamite.inference.multi_instance.random_best_worst import evaluate
-                    else:
-                        from dynamite.inference.multi_instance.random_best_worst_mose import evaluate
-                else:
-                    raise NotImplementedError
-                
-                print(f'[INFO] Loaded Evaluation routine following {eval_strategy} evaluation strategy!')
+                    tarvis_config['dataset'] = 'DAVIS'                                
 
-                print(f'Interactions: {interactions}')
-                print()
-
-                #for interactions, iou in list(itertools.product(max_interactions,iou_threshold)):
                 save_path = os.path.join(vis_path, f'{interactions}_interactions/iou_{int(iou*100)}')
                 #save_path = vis_path
                 os.makedirs(save_path, exist_ok=True) 
@@ -152,12 +127,12 @@ class Trainer(DefaultTrainer):
                 
                 print(f'[INFO] Evaluation complete for dataset {dataset_name}: IoU threshold={iou}, Interaction budget={interactions}!')
 
-                with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
-                    json.dump(results_i, f)
-                with open(os.path.join(save_path,f'progress_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
-                    json.dump(progress_report, f)
+                if dataset_name not in ["mose_val", "burst_val"]:
+                    with open(os.path.join(save_path,f'results_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                        json.dump(results_i, f)
+                    with open(os.path.join(save_path,f'progress_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
+                        json.dump(progress_report, f)
                 
-                if dataset_name != "mose_val":
                     summary, df = summarize_results(results_i)
                     df.to_csv(os.path.join(save_path, f'round_results_{interactions}_interactions_iou_{int(iou*100)}.csv'))
                     with open(os.path.join(save_path,f'summary_{interactions}_interactions_iou_{int(iou*100)}.json'), 'w') as f:
@@ -165,56 +140,7 @@ class Trainer(DefaultTrainer):
                     
                     summary_df = summarize_round_results(df, iou)
                     summary_df.to_csv(os.path.join(save_path, f'round_summary_{interactions}_interactions_iou_{int(iou*100)}.csv'))
-                del results_i
-
-                
-def load_images(dataset_name="davis_2017_val", debug_mode=False):
-    image_path = os.path.join(_root,_DATASET_PATH[dataset_name]["images"])
-    if dataset_name=="mose_val":
-        seqs = sorted([f for f in os.listdir(image_path) if os.path.isdir(os.path.join(image_path,f))])
-    else:
-        val_set = os.path.join(_root,_DATASET_PATH[dataset_name]["sets"])
-        with open(val_set, 'r') as f:
-            seqs = [line.rstrip('\n') for line in f.readlines()]
-    all_images = {}    
-    transform = transforms.Compose([transforms.ToTensor()])
-    for s in seqs:
-        seq_images = []
-        seq_path = os.path.join(image_path, s)
-        imagefiles = sorted([f for f in os.listdir(seq_path)])
-        for file in imagefiles:
-            if file.endswith('.jpg') or file.endswith('.png'):
-                im = Image.open(os.path.join(seq_path, file))
-                im = transform(im)
-                seq_images.append(im)
-        seq_images = torch.stack(seq_images)
-        all_images[s] = seq_images
-        if debug_mode:
-            break
-    return all_images
-
-def load_gt_masks(dataset_name="davis_2017_val", debug_mode=False):
-    mask_path = os.path.join(_root,_DATASET_PATH[dataset_name]["annotations"])
-    if dataset_name=="mose_val":
-        seqs = sorted([f for f in os.listdir(mask_path) if os.path.isdir(os.path.join(mask_path,f))])
-    else:
-        val_set = os.path.join(_root,_DATASET_PATH[dataset_name]["sets"])
-        with open(val_set, 'r') as f:
-            seqs = [line.rstrip('\n') for line in f.readlines()]
-    all_gt_masks = {}
-    for s in seqs:
-        seq_images = []
-        seq_path = os.path.join(mask_path, s)
-        maskfiles = sorted([f for f in os.listdir(seq_path)])
-        for file in maskfiles:
-            if file.endswith('.jpg') or file.endswith('.png'):
-                im = np.asarray(Image.open(os.path.join(seq_path, file)))
-                seq_images.append(im)
-        seq_images = np.asarray(seq_images)
-        all_gt_masks[s] = seq_images
-        if debug_mode:
-            break
-    return all_gt_masks
+                del results_i,progress_report
 
 def setup(args):
     """
@@ -241,31 +167,28 @@ def main(args):
     print('[INFO] Setup complete!')
 
     dataset_name = args.eval_datasets[0]
-    print(f'[INFO] Loading all ground truth masks from the disc...')
-    all_gt_masks = load_gt_masks(dataset_name, args.debug)
-    if dataset_name != "mose_val":
-        print(f'[INFO] Loading all frames from the disc...')
-        all_images = load_images(dataset_name, args.debug)                
+    all_gt_masks = {}
+    all_images = {}
+    if dataset_name not in ["mose_val", "burst_val"]:        
+        all_images = helpers.load_images(dataset_name, args.debug)
+        all_gt_masks = helpers.load_gt_masks(dataset_name, args.debug)    
         assert len(all_images) == len(all_gt_masks)
-        print(f'[INFO] Loaded {len(all_images)} sequences.')
-    else:
-        all_images = {}
     
-    print(f'[INFO] Loading test data loader from {dataset_name}...')
-    data_loader = Trainer.build_test_loader(cfg, dataset_name)
-    print(f'[INFO] Data loader  preparation complete! length: {len(data_loader)}')
-    dataloader_dict = defaultdict(list)
     print(f'[INFO] Iterating through the Data Loader...')
-    # iterate through the data_loader, one image at a time
-    for idx, inputs in enumerate(data_loader):                     
-        curr_seq_name = inputs[0]["file_name"].split('/')[-2]
-        if args.debug and curr_seq_name != list(all_images.keys())[0]:
-            break
-        dataloader_dict[curr_seq_name].append([idx, inputs])
-    del data_loader
+    if dataset_name in ["burst_val"]:
+        dataloader_dict = helpers.burst_imset()
+    else:
+        data_loader = Trainer.build_test_loader(cfg, dataset_name)
+        dataloader_dict = defaultdict(list)
+        for idx, inputs in enumerate(data_loader):      
+            curr_seq_name = inputs[0]["file_name"].split('/')[-2]
+            if args.debug and curr_seq_name != list(all_gt_masks.keys())[0]:
+                break
+            dataloader_dict[curr_seq_name].append([idx, inputs])
+        del data_loader
 
     for interactions, iou in list(itertools.product(args.max_interactions,args.iou_threshold)):
-        dataloader_dict_copy = copy.deepcopy(dataloader_dict)
+        data = copy.deepcopy(dataloader_dict)
         # for evaluation
         if args.eval_only:
             print('[INFO] DynaMITExTarViS Evaluation!')
@@ -301,11 +224,11 @@ def main(args):
             
             res = Trainer.interactive_evaluation(cfg, dynamite_model, 
                                                 interactions, iou,
-                                                all_images, all_gt_masks, dataloader_dict_copy,
+                                                all_images, all_gt_masks, data,
                                                 args, tarvis_config)
 
         #return res
-        del dynamite_model, res, dataloader_dict_copy
+        del dynamite_model, res, data
         torch.cuda.empty_cache()
         gc.collect()
 

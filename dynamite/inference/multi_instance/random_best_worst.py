@@ -16,7 +16,11 @@ from ..utils.predictor import Predictor
 from PIL import Image
 from metrics.j_and_f_scores import batched_jaccard,batched_f_measure
 from tarvis.inference.eval import eval_tarvis
+import gc
 
+import tarvis_dynamite_helpers as helpers
+_DATASET_ROOT = helpers._DATASET_ROOT
+_DATASET_PATH = helpers._DATASET_PATH
 
 def evaluate(
     model, tarvis_config,
@@ -54,17 +58,22 @@ def evaluate(
     with ExitStack() as stack:                                           
 
         if isinstance(model, nn.Module):    
-            stack.enter_context(inference_context(model))                           
+            stack.enter_context(inference_context(model))
         stack.enter_context(torch.no_grad())                             
                            
         total_num_interactions = 0                                       # for whole dataset       
         total_num_rounds = 0                                             # for whole dataset
 
         random.seed(123456+seed_id)
+
+        if dataset_name=="burst_val":
+            sequence_list = dataloader_dict
+        else:
+            sequence_list = list(dataloader_dict.keys())
     
         #### SEQUENCE-LEVEL LOOP ####
         print(f'[EVALUATOR INFO] Sequence-wise evaluation...')
-        for seq in list(dataloader_dict.keys()):
+        for seq in sequence_list:
             print(f'\n[SEQUENCE INFO] Sequence: {seq}')
             if vis_path:
                 vis_path_seq = os.path.join(vis_path, seq)
@@ -73,10 +82,19 @@ def evaluate(
             tarvis_config['output_dir'] = os.path.join(expt_path,'Annotations',seq)
             os.makedirs(os.path.join(expt_path,'Annotations',seq), exist_ok=True)
             
+            if dataset_name=="burst_val":
+                dataloader_dict = helpers.burst_video_loader(seq)
+
             # Initialize propagation module - once per-sequence
-            seq_object_ids = set(np.unique(all_gt_masks[seq][0]))       # object ids in the sequence
+            if dataset_name not in ["mose_val", "burst_val"]:
+                all_frames = all_images[seq]                            # collect all image frames in the sequence
+                all_masks = all_gt_masks[seq]
+            else:
+                all_frames = helpers.load_sequence_images(seq, dataset_name)
+                all_masks = helpers.load_sequence_masks(seq, dataset_name)
+
+            seq_object_ids = set(np.unique(all_masks[0]))       # object ids in the sequence
             seq_num_instances = len(seq_object_ids) - 1                 # remove bg
-            all_frames = all_images[seq]                                # collect all image frames in the sequence
             num_frames = len(all_frames)                                # sequence length
             all_frames = all_frames.unsqueeze(0).float()                            
 
@@ -109,6 +127,8 @@ def evaluate(
                 print(f'\n\n[DynaMITe INFO][SEQ:{seq}][ROUND:{round_num}] DynaMITe refining frame {lowest_frame_index}...')
                 idx, inputs = dataloader_dict[seq][lowest_frame_index]                              # load frame with lowest IoU
 
+                if dataset_name == "burst_val":
+                    del dataloader_dict                    
                 # (re)load Clicker and Predictor (DynaMITe)
                 if num_interactions_for_sequence[lowest_frame_index] == 0:                           # if frame has been previously interacted with 
                     clicker = Clicker(inputs, sampling_strategy)
@@ -121,7 +141,7 @@ def evaluate(
                 
                 
                 #check for missing objects
-                object_ids = set(np.unique(all_gt_masks[seq][lowest_frame_index]))                  # objects present in the frame                
+                object_ids = set(np.unique(all_masks[lowest_frame_index]))                  # objects present in the frame                
                 num_instances = clicker.num_instances
                 missing_obj_ids = None
                 if num_instances!=seq_num_instances:                    
@@ -163,7 +183,7 @@ def evaluate(
                    clicker.save_visualization(vis_path_round, ious=ious, num_interactions=num_interactions_for_sequence[lowest_frame_index], round_num=round_num, save_masks=save_masks)             
                 
                 # interaction limit
-                max_iters_for_image = max_interactions * num_instances                                      
+                max_iters_for_image = max_interactions * num_instances
                 point_sampled = True
                 random_indexes = list(range(len(ious)))
 
@@ -238,18 +258,18 @@ def evaluate(
                     out_masks_.append(dummy_)
                 out_masks = np.stack(out_masks_, axis=0)
 
-                if dataset_name in ['mose_val']:
-                    ...
+                if dataset_name in ['mose_val', 'burst_val']:
+                    lowest_frame_index = -1 #stop round iter
+                    break
                 else:
                     # metrics (mean: over instances in a frame)
-                    jaccard_mean, jaccard_instances = batched_jaccard(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
-                    contour_mean, contour_instances = batched_f_measure(all_gt_masks[seq], out_masks, average_over_objects=True, nb_objects=seq_num_instances)
+                    jaccard_mean, jaccard_instances = batched_jaccard(all_masks, out_masks, average_over_objects=True, nb_objects=seq_num_instances)
+                    contour_mean, contour_instances = batched_f_measure(all_masks, out_masks, average_over_objects=True, nb_objects=seq_num_instances)
 
                     j_and_f = 0.5*jaccard_mean + 0.5*contour_mean
                     j_and_f = j_and_f.tolist()
                     seq_avg_jf = sum(j_and_f)/len(j_and_f)
 
-                    #iou_for_sequence = compute_iou_for_sequence(out_masks, all_gt_masks[seq])
                     iou_for_sequence = jaccard_mean.tolist()
                     seq_avg_iou = sum(iou_for_sequence)/len(iou_for_sequence)
                     print(f'[PROPAGATION INFO][SEQ:{seq}][ROUND:{round_num}] Prediction results: Average IoU: {seq_avg_iou}, Average J&F: {seq_avg_jf}')
@@ -306,7 +326,7 @@ def evaluate(
             all_ious[seq] = iou_for_sequence 
             
             del clicker_dict, predictor_dict
-            del all_frames, num_interactions_for_sequence   
+            del all_frames, all_masks, num_interactions_for_sequence   
             del iou_for_sequence, jaccard_instances, jaccard_mean, contour_instances, contour_mean
             gc.collect()
 
@@ -346,80 +366,3 @@ def inference_context(model):
     model.eval()
     yield
     model.train(training_mode)
-
-def load_images(path:str ='/globalwork/roy/dynamite_video/mivos/MiVOS/datasets/DAVIS/DAVIS-2017-trainval')-> dict:
-    val_set = os.path.join(path,'ImageSets/2017/val.txt')
-    with open(val_set, 'r') as f:
-        seqs = [line.rstrip('\n') for line in f.readlines()]
-    all_images = {}
-    image_path = os.path.join(path,'JPEGImages/480p')
-    transform = transforms.Compose([transforms.ToTensor()])
-    for s in seqs:
-        seq_images = []
-        seq_path = os.path.join(image_path, s)
-        for file in os.listdir(seq_path):
-            if file.endswith('.jpg'):
-                im = Image.open(os.path.join(seq_path, file))
-                im = transform(im)
-                seq_images.append(im)
-        seq_images = torch.stack(seq_images)
-        all_images[s] = seq_images
-    return all_images
-
-def load_gt_masks(path:str='/globalwork/roy/dynamite_video/mivos/MiVOS/datasets/DAVIS/DAVIS-2017-trainval')-> dict:
-    val_set = os.path.join(path,'ImageSets/2017/val.txt')
-    with open(val_set, 'r') as f:
-        seqs = [line.rstrip('\n') for line in f.readlines()]
-    all_gt_masks = {}
-    mask_path = os.path.join(path,'Annotations/480p')
-    for s in seqs:
-        seq_images = []
-        seq_path = os.path.join(mask_path, s)
-        for file in os.listdir(seq_path):
-            if file.endswith('.png'):
-                im = np.asarray(Image.open(os.path.join(seq_path, file)))
-                seq_images.append(im)
-        seq_images = np.asarray(seq_images)
-        all_gt_masks[s] = seq_images
-    return all_gt_masks
-
-def compute_iou_for_sequence(pred: np.ndarray, gt: np.ndarray) -> list:
-    ious = []
-    for gt_mask, pred_mask in zip(gt, pred):
-        intersection = np.logical_and(gt_mask, pred_mask).sum()
-        union = np.logical_or(gt_mask, pred_mask).sum()
-        ious.append(intersection/union)
-    return ious
-
-def compute_instance_wise_iou_for_sequence(pred: np.ndarray, gt: np.ndarray)->np.ndarray:
-    # pred - output masks after temporal propagation
-    # gt - ground truth masks
-    ious = []
-    num_instances = len(np.unique(gt[0])) - 1
-    idx = 0
-    for gt_frame, pred_frame in zip(gt, pred):    # frame-level
-        
-        ious_frame = []
-        mask_H,mask_W = gt_frame.shape
-        
-        gt_inst = np.zeros((num_instances,mask_H,mask_W))
-        for i in range(num_instances):
-            gt_inst[num_instances-i-1][np.where(gt_frame==i+1)] = 1
-        
-        pred_inst = np.zeros((num_instances,mask_H,mask_W))
-        for i in range(num_instances):
-            pred_inst[i][np.where(pred_frame==i+1)] = 1
-        
-        for g,p in zip(gt_inst, pred_inst):     # instance-level
-            intersection = np.logical_and(g, p).sum()
-            union = np.logical_or(g, p).sum()
-            ious_frame.append(intersection/union)
-        ious.append(ious_frame)
-        idx+=1
-    return np.array(ious)
-
-def unsqueeze_mask(mask, channels):
-    dummy = np.zeros((channels, mask.shape[0], mask.shape[1]))
-    for i in range(1,channels+1):                        
-        dummy[i-1][np.where(mask==i)] = 1
-    return dummy

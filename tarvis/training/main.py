@@ -1,3 +1,7 @@
+import sys
+sys.path.append("/globalwork/roy/dynamite_video/tarvis_dynamite/TarViS_DynaMITe")
+import os
+os.environ["TARVIS_WORKSPACE_DIR"]="/globalwork/roy/dynamite_video/tarvis_dynamite"
 from argparse import ArgumentParser
 from collections import OrderedDict
 from glob import glob
@@ -23,7 +27,7 @@ from tarvis.training.distributed_sampler import DistributedSampler
 import cv2
 import copy
 import logging
-import os
+#import os
 import os.path as osp
 import random
 import numpy as np
@@ -38,6 +42,8 @@ import yaml
 
 warnings.filterwarnings(action='ignore', category=UserWarning, module='torch.optim.lr_scheduler')
 
+import wandb
+wandb.init(entity='srijeet', project='dynamite_video', name='vanilla-tarvis-finetune-2', sync_tensorboard=True)
 
 class Trainer(TrainerBase):
     def setup(self, *args, **kwargs):
